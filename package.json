@@ -1,0 +1,12 @@
+{
+  "name": "kizamubeam-packs",
+  "version": "0.1.0",
+  "description": "Extension packs (motifs, patterns, templates, materials) for KizamuBeam",
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "test": "npm run validate"
+  }
+}
