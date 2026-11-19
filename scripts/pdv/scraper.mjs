@@ -34,7 +34,7 @@ function resolveUrl(href, base = BASE_URL) {
  * Supports:
  *  - full https://publicdomainvectors.org/... URL
  *  - "tag:<name>" -> /en/tag/<name>
- *  - free-text query -> /en/<slugified-query>
+ *  - free-text query -> /search?lang=en&q=<query>
  */
 export function buildSearchUrl(query, { page = 1, type = 'ALL' } = {}) {
   const q = String(query ?? '').trim();
@@ -53,11 +53,9 @@ export function buildSearchUrl(query, { page = 1, type = 'ALL' } = {}) {
   } else if (!q) {
     url = new URL(`${BASE_URL}/en/free-clipart/`);
   } else {
-    const slug = q
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '');
-    url = new URL(`${BASE_URL}/en/${encodeURIComponent(slug || 'vector')}`);
+    url = new URL(`${BASE_URL}/search`);
+    url.searchParams.set('lang', 'en');
+    url.searchParams.set('q', q);
   }
 
   if (page > 1) url.searchParams.set('page', String(page));

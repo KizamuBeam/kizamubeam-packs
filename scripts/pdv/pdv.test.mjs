@@ -56,7 +56,7 @@ test('svg: accepts monochrome black/white/grayscale SVGs and rejects colored/gra
 test('scraper: buildSearchUrl handles queries, tags, pages and type filters', () => {
   assert.equal(
     buildSearchUrl('black cat', { page: 2, type: 'SVG' }),
-    'https://publicdomainvectors.org/en/black-cat?page=2&type=svg',
+    'https://publicdomainvectors.org/search?lang=en&q=black+cat&page=2&type=svg',
   );
   assert.equal(
     buildSearchUrl('tag:Animals', { page: 1, type: 'ALL' }),
