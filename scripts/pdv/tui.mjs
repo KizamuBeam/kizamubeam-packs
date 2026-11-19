@@ -3,7 +3,7 @@
 import { emitKeypressEvents } from 'node:readline';
 import { processMotif } from './pipeline.mjs';
 import { buildSearchUrl, parseDetailPage, parseListingPage } from './scraper.mjs';
-import { buildIgnoreSet, DEFAULT_IGNORED_TAGS, filterRelevantTags, pickPrimaryTopicTag } from './tags.mjs';
+import { buildIgnoreSet, DEFAULT_IGNORED_TAGS, filterRelevantTags, pickPrimaryTopicTag, slugifyTag } from './tags.mjs';
 
 const ESC = '\x1b';
 const ANSI = {
@@ -36,6 +36,27 @@ function truncate(str, max) {
   const s = String(str ?? '');
   if (max <= 1) return s.slice(0, Math.max(0, max));
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+function queryToFolderName(query) {
+  const q = String(query ?? '').trim();
+  if (!q) return '';
+  if (/^https?:\/\//i.test(q)) {
+    try {
+      const u = new URL(q);
+      const qParam = u.searchParams.get('q');
+      if (qParam) return slugifyTag(qParam);
+      const segs = u.pathname.split('/').filter(Boolean);
+      const last = segs[segs.length - 1] ?? '';
+      return slugifyTag(last.replace(/\.html$/i, ''));
+    } catch {
+      return '';
+    }
+  }
+  if (q.toLowerCase().startsWith('tag:')) {
+    return slugifyTag(q.slice(4));
+  }
+  return slugifyTag(q);
 }
 
 export async function runTui({ client, converters, outputDir, initialQuery = '' }) {
@@ -166,7 +187,8 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
     const cur = state.items[state.cursor];
     if (cur) {
       const relevant = cur.detail ? filterRelevantTags(cur.detail.tags, state.ignoreSet) : [];
-      const topic = cur.topicTag ?? (cur.detail ? pickPrimaryTopicTag({
+      const queryFolder = queryToFolderName(state.query);
+      const topic = queryFolder || cur.topicTag || (cur.detail ? pickPrimaryTopicTag({
         tags: cur.detail.tags,
         title: cur.detail.title,
         category: cur.detail.category,
@@ -385,22 +407,26 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
     }
 
     state.busy = true;
+    state.cancelRequested = false;
     state.busyLabel = 'Lade & konvertiere Motive …';
     state.progress = { done: 0, total: targets.length };
     render();
 
+    const folderName = queryToFolderName(state.query);
     let saved = 0;
     let filtered = 0;
     let errors = 0;
 
     try {
       for (const it of targets) {
+        if (state.cancelRequested) break;
         try {
           const res = await processMotif({
             item: it,
             client,
             converters,
             outputDir: state.outputDir,
+            folderName,
             ignoreSet: state.ignoreSet,
             bwOnly: state.bwOnly,
             onLog: (msg) => addLog(msg),
@@ -408,10 +434,10 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
           it.detail = res.detail;
           it.topicTag = res.topicTag;
           if (res.status === 'saved') {
-            it.statusText = `OK → ${res.topicTag}/`;
+            it.statusText = `OK → ${res.targetFolder}/`;
             saved++;
           } else if (res.status === 'skipped') {
-            it.statusText = `Vorhanden → ${res.topicTag}/`;
+            it.statusText = `Vorhanden → ${res.targetFolder}/`;
           } else if (res.status === 'filtered') {
             it.statusText = 'Kein S/W';
             filtered++;
@@ -427,6 +453,7 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
       addLog(`Fertig: ${saved} gespeichert, ${filtered} gefiltert (kein S/W), ${errors} Fehler.`);
     } finally {
       state.busy = false;
+      state.cancelRequested = false;
       state.busyLabel = '';
       state.progress = { done: 0, total: 0 };
       render();

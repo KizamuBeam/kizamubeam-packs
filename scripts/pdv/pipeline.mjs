@@ -11,6 +11,7 @@ export async function processMotif({
   client,
   converters,
   outputDir,
+  folderName = '',
   ignoreSet = buildIgnoreSet(),
   bwOnly = true,
   overwrite = false,
@@ -30,15 +31,16 @@ export async function processMotif({
     category: detail.category,
     ignoreSet,
   });
+  const targetFolder = folderName ? slugifyTag(folderName) : topicTag;
   const relevantTags = filterRelevantTags(detail.tags, ignoreSet);
   const fileSlug = `${slugifyTag(detail.title).slice(0, 60)}-${detail.id}`;
-  const targetDir = join(outputDir, topicTag);
+  const targetDir = join(outputDir, targetFolder);
   const targetSvg = join(targetDir, `${fileSlug}.svg`);
   const targetMeta = join(targetDir, `${fileSlug}.json`);
 
   if (!overwrite && existsSync(targetSvg)) {
-    onLog(`Übersprungen (bereits vorhanden): ${topicTag}/${fileSlug}.svg`);
-    return { status: 'skipped', reason: 'Bereits vorhanden', topicTag, targetSvg, detail };
+    onLog(`Übersprungen (bereits vorhanden): ${targetFolder}/${fileSlug}.svg`);
+    return { status: 'skipped', reason: 'Bereits vorhanden', topicTag, targetFolder, targetSvg, detail };
   }
 
   onLog(`Lade Datei (${detail.preferredDownload.format}): ${detail.preferredDownload.url}`);
@@ -108,10 +110,11 @@ export async function processMotif({
     'utf8',
   );
 
-  onLog(`Gespeichert: ${topicTag}/${fileSlug}.svg (${analysis.shapeCount} Pfade)`);
+  onLog(`Gespeichert: ${targetFolder}/${fileSlug}.svg (${analysis.shapeCount} Pfade)`);
   return {
     status: 'saved',
     topicTag,
+    targetFolder,
     targetSvg,
     targetMeta,
     convertedFrom,

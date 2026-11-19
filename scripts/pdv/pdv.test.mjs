@@ -168,10 +168,13 @@ test('pipeline: processMotif sorts monochrome SVG into decisive topic-tag folder
       client: mockClient,
       converters: { mode: 'none' },
       outputDir: tmpOut,
+      folderName: 'christmas',
       bwOnly: true,
     });
     assert.equal(res1.status, 'saved');
     assert.equal(res1.topicTag, 'oak');
+    assert.equal(res1.targetFolder, 'christmas');
+    assert.equal(res1.targetSvg.includes(`${join('christmas', 'oak-tree-silhouette-111.svg')}`), true);
     assert.equal(existsSync(res1.targetSvg), true);
     const meta = JSON.parse(readFileSync(res1.targetMeta, 'utf8'));
     assert.equal(meta.topicTag, 'oak');
