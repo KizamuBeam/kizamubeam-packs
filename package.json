@@ -7,6 +7,9 @@
   "type": "module",
   "scripts": {
     "validate": "node scripts/validate.mjs",
-    "test": "npm run validate"
+    "build-catalog": "node scripts/build-catalog.mjs _site",
+    "scraper": "node scripts/pdv-scraper.mjs",
+    "pack-builder": "node scripts/pdv-pack.mjs",
+    "test": "node --test scripts/pdv/pdv.test.mjs && npm run validate"
   }
 }
