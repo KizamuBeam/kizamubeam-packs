@@ -97,6 +97,9 @@ export function parseListingPage(html, baseUrl = BASE_URL) {
     const altMatch = /\balt=["']([^"']+)["']/i.exec(inner);
     const titleAttr = /\btitle=["']([^"']+)["']/i.exec(m[0]);
     const textOnly = stripTags(inner);
+    if (/^(English|Deutsch|Español|Français|Italiano|Português|Polski|Svenska|Český|Nederlands|Türkçe|中文|한국어|日本語|हिंदी|Romana|Indonesia|Русский|Suomalainen|Norsk|עִברִית|eurbaa)$/i.test(textOnly)) {
+      continue;
+    }
     if (textOnly && textOnly.length >= 2) title = textOnly;
     else if (altMatch?.[1]) title = decodeHtmlEntities(altMatch[1]);
     else if (titleAttr?.[1]) title = decodeHtmlEntities(titleAttr[1]);

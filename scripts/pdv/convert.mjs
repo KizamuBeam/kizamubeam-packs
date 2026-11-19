@@ -19,20 +19,26 @@ async function hasCommand(cmd, args = ['--version']) {
 
 /** Detect installed local vector conversion tools. */
 export async function detectConverters() {
-  const [inkscape, gs, pdftocairo, pdf2svg] = await Promise.all([
+  const [inkscape, gs, pstopdf, pdftocairo, pdf2svg] = await Promise.all([
     hasCommand('inkscape', ['--version']),
     hasCommand('gs', ['--version']),
+    hasCommand('pstopdf', ['-h']),
     hasCommand('pdftocairo', ['-v']),
     hasCommand('pdf2svg', []),
   ]);
 
   let mode = 'none';
-  if (inkscape) mode = 'inkscape';
-  else if (gs && pdftocairo) mode = 'gs+pdftocairo';
-  else if (gs && pdf2svg) mode = 'gs+pdf2svg';
-  else if (pdftocairo) mode = 'pdftocairo';
+  if ((gs || pstopdf) && (pdftocairo || pdf2svg || inkscape)) {
+    const epsToPdf = gs ? 'gs' : 'pstopdf';
+    const pdfToSvg = pdftocairo ? 'pdftocairo' : pdf2svg ? 'pdf2svg' : 'inkscape';
+    mode = `${epsToPdf}+${pdfToSvg}`;
+  } else if (inkscape) {
+    mode = 'inkscape';
+  } else if (pdftocairo) {
+    mode = 'pdftocairo';
+  }
 
-  return { inkscape, gs, pdftocairo, pdf2svg, mode };
+  return { inkscape, gs, pstopdf, pdftocairo, pdf2svg, mode };
 }
 
 function listFilesRecursive(dir) {
@@ -153,15 +159,16 @@ async function tryInkscape(inputPath, outSvg) {
 async function tryPdfToSvg(pdfPath, outSvg, tools) {
   if (tools.pdftocairo) {
     await execFileAsync('pdftocairo', ['-svg', pdfPath, outSvg], { timeout: 60_000 });
-  } else if (tools.pdf2svg) {
+    if (existsSync(outSvg)) return readFileSync(outSvg, 'utf8');
+  }
+  if (tools.pdf2svg) {
     await execFileAsync('pdf2svg', [pdfPath, outSvg], { timeout: 60_000 });
-  } else {
-    throw new Error('Weder pdftocairo noch pdf2svg verfügbar');
+    if (existsSync(outSvg)) return readFileSync(outSvg, 'utf8');
   }
-  if (!existsSync(outSvg)) {
-    throw new Error('PDF-zu-SVG-Konvertierung hat keine Ausgabedatei erzeugt');
+  if (tools.inkscape) {
+    return tryInkscape(pdfPath, outSvg);
   }
-  return readFileSync(outSvg, 'utf8');
+  throw new Error('Kein PDF-zu-SVG-Konverter (pdftocairo, pdf2svg, inkscape) verfügbar');
 }
 
 /**
@@ -180,19 +187,11 @@ export async function convertVectorToSvgText(inputPath, converters) {
   const errors = [];
 
   try {
-    // Direct PDF -> SVG via pdftocairo/pdf2svg if input is already PDF (modern .ai or .pdf)
     const rawHead = readFileSync(inputPath).subarray(0, 16).toString('utf8');
     const isPdf = ext === '.pdf' || /^%PDF-/i.test(rawHead);
 
-    if (tools.inkscape) {
-      try {
-        return await tryInkscape(inputPath, outSvg);
-      } catch (err) {
-        errors.push(err.message);
-      }
-    }
-
-    if (isPdf && (tools.pdftocairo || tools.pdf2svg)) {
+    // 1. If input is already PDF (modern .ai or .pdf), convert directly to SVG
+    if (isPdf) {
       try {
         return await tryPdfToSvg(inputPath, outSvg, tools);
       } catch (err) {
@@ -200,7 +199,9 @@ export async function convertVectorToSvgText(inputPath, converters) {
       }
     }
 
-    if (tools.gs && (tools.pdftocairo || tools.pdf2svg)) {
+    // 2. For EPS / PostScript .ai: convert to intermediate PDF via Ghostscript or macOS pstopdf first
+    // (Inkscape on macOS cannot parse raw EPS directly without Ghostscript in PATH)
+    if (tools.gs) {
       try {
         const tmpPdf = join(outDir, 'intermediate.pdf');
         await execFileAsync(
@@ -216,12 +217,30 @@ export async function convertVectorToSvgText(inputPath, converters) {
           ],
           { timeout: 60_000 },
         );
-        if (!existsSync(tmpPdf)) {
-          throw new Error('Ghostscript hat keine Zwischen-PDF erzeugt');
-        }
+        if (!existsSync(tmpPdf)) throw new Error('keine Zwischen-PDF erzeugt');
         return await tryPdfToSvg(tmpPdf, outSvg, tools);
       } catch (err) {
         errors.push(`Ghostscript: ${err.message}`);
+      }
+    }
+
+    if (tools.pstopdf) {
+      try {
+        const tmpPdf = join(outDir, 'intermediate.pdf');
+        await execFileAsync('pstopdf', [inputPath, '-o', tmpPdf], { timeout: 60_000 });
+        if (!existsSync(tmpPdf)) throw new Error('keine Zwischen-PDF erzeugt');
+        return await tryPdfToSvg(tmpPdf, outSvg, tools);
+      } catch (err) {
+        errors.push(`pstopdf: ${err.message}`);
+      }
+    }
+
+    // 3. Last resort: try Inkscape directly (works on Linux if Ghostscript is available to Inkscape)
+    if (tools.inkscape) {
+      try {
+        return await tryInkscape(inputPath, outSvg);
+      } catch (err) {
+        errors.push(err.message);
       }
     }
 
@@ -230,7 +249,7 @@ export async function convertVectorToSvgText(inputPath, converters) {
     }
 
     throw new Error(
-      'Kein Konverter für AI/EPS gefunden. Bitte Inkscape oder Ghostscript (gs) + pdftocairo installieren.',
+      'Kein Konverter für AI/EPS gefunden. Bitte Ghostscript (gs) + pdftocairo oder Inkscape installieren.',
     );
   } finally {
     rmSync(outDir, { recursive: true, force: true });
