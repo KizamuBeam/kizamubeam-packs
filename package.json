@@ -8,6 +8,7 @@
   "scripts": {
     "validate": "node scripts/validate.mjs",
     "scraper": "node scripts/pdv-scraper.mjs",
+    "pack-builder": "node scripts/pdv-pack.mjs",
     "test": "node --test scripts/pdv/pdv.test.mjs && npm run validate"
   }
 }

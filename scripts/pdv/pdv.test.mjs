@@ -4,9 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { detectConverters, extractVectorFromBuffer, sniffBufferType } from './convert.mjs';
+import { buildPackFromEntries, scanMotifFolder } from './packBuilder.mjs';
 import { processMotif } from './pipeline.mjs';
 import { buildSearchUrl, parseDetailPage, parseListingPage } from './scraper.mjs';
 import { analyzeSvg } from './svg.mjs';
+import { svgToKizamuAsset } from './svgToAsset.mjs';
 import { buildIgnoreSet, filterRelevantTags, pickPrimaryTopicTag } from './tags.mjs';
 
 test('tags: ignores silhouette, black and white, outline, ornament and picks decisive topic tag', () => {
@@ -190,5 +192,58 @@ test('pipeline: processMotif sorts monochrome SVG into decisive topic-tag folder
     assert.equal(res2.status, 'filtered');
   } finally {
     rmSync(tmpOut, { recursive: true, force: true });
+  }
+});
+
+test('svgToAsset & packBuilder: converts SVG paths/shapes and builds a valid .kzp pack', async () => {
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const svg = `
+    <svg viewBox="0 0 100 50" xmlns="http://www.w3.org/2000/svg">
+      <g transform="translate(10, 5)">
+        <path d="M0 0 L40 0 C50 0 50 20 40 20 Z" />
+        <circle cx="20" cy="20" r="10" />
+      </g>
+    </svg>
+  `;
+  const asset = svgToKizamuAsset(svg, { targetMaxMm: 50 });
+  assert.equal(asset.w, 50);
+  assert.ok(asset.h > 0 && asset.h <= 50);
+  assert.equal(asset.objs.length, 1);
+  assert.equal(asset.objs[0].shape.kind, 'path');
+  assert.equal(asset.objs[0].shape.subs.length, 2);
+  assert.equal(asset.objs[0].shape.subs[0].closed, true);
+
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'pdv-pack-'));
+  try {
+    const motifDir = join(tmpRoot, 'christmas');
+    const packsDir = join(tmpRoot, 'packs');
+    mkdirSync(motifDir, { recursive: true });
+    writeFileSync(join(motifDir, 'star-101.svg'), svg, 'utf8');
+    writeFileSync(
+      join(motifDir, 'star-101.json'),
+      JSON.stringify({ title: 'Christmas Star', relevantTags: ['star', 'christmas'] }),
+      'utf8',
+    );
+
+    const entries = scanMotifFolder(motifDir);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].title, 'Christmas Star');
+
+    const built = buildPackFromEntries({
+      entries,
+      packId: 'org.kizamubeam.christmas',
+      name: 'Christmas Motifs',
+      version: '1.0.0',
+      packsDir,
+    });
+    assert.equal(built.assetCount, 1);
+    assert.equal(existsSync(built.outPath), true);
+    const pack = JSON.parse(readFileSync(built.outPath, 'utf8'));
+    assert.equal(pack.format, 'kizamubeam-pack');
+    assert.equal(pack.id, 'org.kizamubeam.christmas');
+    assert.equal(pack.assets[0].name, 'Christmas Star');
+    assert.deepEqual(pack.assets[0].tags, ['star', 'christmas']);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
