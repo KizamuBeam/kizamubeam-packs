@@ -46,6 +46,7 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
   const state = {
     query: initialQuery,
     page: 1,
+    maxPage: 1,
     hasNextPage: false,
     formatFilter: 'ALL', // ALL | SVG | AI | EPS
     bwOnly: true,
@@ -56,6 +57,7 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
     cursor: 0,
     scroll: 0,
     busy: false,
+    cancelRequested: false,
     busyLabel: '',
     progress: { done: 0, total: 0 },
     logs: [
@@ -102,7 +104,10 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
     // 2. Filter & Search status bar
     const bwLabel = state.bwOnly ? `${ANSI.green}S/W: AN${ANSI.reset}` : `${ANSI.yellow}S/W: AUS${ANSI.reset}`;
     const fmtLabel = `${ANSI.cyan}Format: ${state.formatFilter}${ANSI.reset}`;
-    const qLabel = state.query ? `Suche: "${state.query}" (Seite ${state.page})` : 'Keine aktive Suche – drücke [/]';
+    const pageInfo = state.maxPage > state.page ? `${state.page}/${state.maxPage}` : `${state.page}`;
+    const qLabel = state.query
+      ? `Suche: "${state.query}" (S.${pageInfo} · ${state.items.length} Treffer)`
+      : 'Keine aktive Suche – drücke [/]';
     const selectedCount = state.items.filter((i) => i.selected).length;
     lines.push(
       ` ${truncate(qLabel, Math.max(20, cols - 45))}  |  ${fmtLabel}  |  ${bwLabel}  |  Markiert: ${selectedCount}`,
@@ -194,10 +199,10 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
     if (state.busy) {
       const prog =
         state.progress.total > 0 ? ` (${state.progress.done}/${state.progress.total})` : '';
-      lines.push(`${ANSI.yellow}${ANSI.bold} ⏳ ${state.busyLabel}${prog}${ANSI.reset}`);
+      lines.push(`${ANSI.yellow}${ANSI.bold} ⏳ ${state.busyLabel}${prog}  [Esc] Abbrechen${ANSI.reset}`);
     } else {
       lines.push(
-        `${ANSI.dim} [/] Suche  [Space] Auswählen  [a] Alle  [Enter] Details  [d] Download  [f] Format  [b] S/W  [t] Ignorier-Tags  [c] Setup  [n/p] Seite  [q] Ende${ANSI.reset}`,
+        `${ANSI.dim} [/] Suche [Space] Wahl [a] Alle [d] Laden [m] +Seite [l] Alle Seiten [f] Fmt [b] S/W [t] Tags [c] Cookie [q] Ende${ANSI.reset}`,
       );
     }
 
@@ -227,19 +232,17 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
     process.stdout.write(out);
   }
 
-  async function runSearch(query, page = 1) {
-    if (state.busy) return;
-    state.busy = true;
-    state.busyLabel = `Suche "${query || 'Alle'}" (Seite ${page}) …`;
-    render();
-    try {
-      const url = buildSearchUrl(query, { page, type: state.formatFilter });
-      addLog(`Rufe auf: ${url}`);
-      const html = await client.fetchHtml(url);
-      const parsed = parseListingPage(html, url);
-      state.query = query;
-      state.page = page;
-      state.hasNextPage = parsed.hasNextPage;
+  async function fetchPage(query, page, { append = false } = {}) {
+    const url = buildSearchUrl(query, { page, type: state.formatFilter });
+    addLog(`Rufe auf: ${url}`);
+    const html = await client.fetchHtml(url);
+    const parsed = parseListingPage(html, url, page);
+    state.query = query;
+    state.page = page;
+    state.maxPage = Math.max(append ? state.maxPage : 1, parsed.maxPage);
+    state.hasNextPage = parsed.hasNextPage;
+
+    if (!append) {
       state.items = parsed.items.map((it) => ({
         ...it,
         selected: false,
@@ -247,12 +250,98 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
       }));
       state.cursor = 0;
       state.scroll = 0;
-      addLog(`${state.items.length} Motive gefunden.`);
+    } else {
+      const existing = new Set(state.items.map((i) => i.id));
+      let added = 0;
+      for (const it of parsed.items) {
+        if (existing.has(it.id)) continue;
+        existing.add(it.id);
+        state.items.push({ ...it, selected: false, statusText: '' });
+        added++;
+      }
+      return { fetched: parsed.items.length, added };
+    }
+    return { fetched: parsed.items.length, added: parsed.items.length };
+  }
+
+  async function runSearch(query, page = 1) {
+    if (state.busy) return;
+    state.busy = true;
+    state.cancelRequested = false;
+    state.busyLabel = `Suche "${query || 'Alle'}" (Seite ${page}) …`;
+    render();
+    try {
+      await fetchPage(query, page, { append: false });
+      addLog(`${state.items.length} Motive gefunden (max. Seite ${state.maxPage}).`);
     } catch (err) {
       addLog(`Fehler bei Suche: ${err.message}`);
     } finally {
       state.busy = false;
       state.busyLabel = '';
+      render();
+    }
+  }
+
+  async function appendNextPage() {
+    if (state.busy || !state.query) return;
+    if (!state.hasNextPage) {
+      addLog('Keine weitere Seite vorhanden.');
+      return;
+    }
+    state.busy = true;
+    state.cancelRequested = false;
+    const nextPage = state.page + 1;
+    state.busyLabel = `Lade Seite ${nextPage} …`;
+    render();
+    try {
+      const { added } = await fetchPage(state.query, nextPage, { append: true });
+      addLog(`Seite ${nextPage} angehängt (+${added} Motive, gesamt: ${state.items.length}).`);
+    } catch (err) {
+      addLog(`Fehler bei Seite ${nextPage}: ${err.message}`);
+    } finally {
+      state.busy = false;
+      state.busyLabel = '';
+      render();
+    }
+  }
+
+  async function loadAllPages(maxPages = 50) {
+    if (state.busy || !state.query) return;
+    if (!state.hasNextPage) {
+      addLog('Bereits alle Seiten geladen.');
+      return;
+    }
+    state.busy = true;
+    state.cancelRequested = false;
+    const targetEnd = Math.min(state.maxPage || state.page + maxPages, state.page + maxPages);
+    state.progress = { done: state.page, total: targetEnd };
+    state.busyLabel = 'Lade alle Seiten …';
+    render();
+
+    let totalAdded = 0;
+    try {
+      while (state.hasNextPage && state.page < targetEnd && !state.cancelRequested) {
+        const nextPage = state.page + 1;
+        state.busyLabel = `Lade Seite ${nextPage}/${targetEnd} (${state.items.length} Motive) …`;
+        render();
+        const { added, fetched } = await fetchPage(state.query, nextPage, { append: true });
+        totalAdded += added;
+        state.progress = { done: state.page, total: Math.min(state.maxPage, targetEnd) };
+        render();
+        if (fetched === 0) break;
+      }
+      if (state.cancelRequested) {
+        addLog(`Abgebrochen bei Seite ${state.page}. Gesamt: ${state.items.length} Motive.`);
+      } else {
+        addLog(`Alle Seiten geladen (+${totalAdded} Motive, gesamt: ${state.items.length}).`);
+      }
+    } catch (err) {
+      addLog(`Fehler beim Nachladen (Seite ${state.page + 1}): ${err.message}`);
+    } finally {
+      state.busy = false;
+      state.cancelRequested = false;
+      state.busyLabel = '';
+      state.progress = { done: 0, total: 0 };
       render();
     }
   }
@@ -409,7 +498,13 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
         return;
       }
 
-      if (state.busy) return;
+      if (state.busy) {
+        if (key.name === 'escape') {
+          state.cancelRequested = true;
+          addLog('Abbruch angefordert …');
+        }
+        return;
+      }
 
       if (key.name === 'up' || key.name === 'k') {
         if (state.cursor > 0) state.cursor--;
@@ -459,6 +554,10 @@ export async function runTui({ client, converters, outputDir, initialQuery = '' 
         if (state.query) await runSearch(state.query, state.page + 1);
       } else if (str === 'p') {
         if (state.query && state.page > 1) await runSearch(state.query, state.page - 1);
+      } else if (str === 'm') {
+        await appendNextPage();
+      } else if (str === 'l') {
+        await loadAllPages();
       } else if (str === 't') {
         openInputModal(
           'Zusätzliche ignorierte Tags (kommagetrennt)',

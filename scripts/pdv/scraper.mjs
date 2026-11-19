@@ -65,9 +65,9 @@ export function buildSearchUrl(query, { page = 1, type = 'ALL' } = {}) {
 
 /**
  * Parse search / category / tag listing HTML into motif summaries.
- * @returns {{ items: Array<{ id: string, title: string, url: string, formats: string[], size: string }>, hasNextPage: boolean }}
+ * @returns {{ items: Array<{ id: string, title: string, url: string, formats: string[], size: string }>, hasNextPage: boolean, maxPage: number }}
  */
-export function parseListingPage(html, baseUrl = BASE_URL) {
+export function parseListingPage(html, baseUrl = BASE_URL, currentPage = 1) {
   const items = [];
   const seenIds = new Set();
 
@@ -127,8 +127,17 @@ export function parseListingPage(html, baseUrl = BASE_URL) {
     });
   }
 
-  const hasNextPage = /rel=["']next["']|[?&]page=\d+/i.test(html);
-  return { items, hasNextPage };
+  let maxPage = currentPage;
+  const pageRe = /[?&]page=(\d+)/gi;
+  let pm;
+  while ((pm = pageRe.exec(html)) !== null) {
+    const p = Number(pm[1]);
+    if (Number.isFinite(p) && p > maxPage) maxPage = p;
+  }
+
+  const hasRelNext = /rel=["']next["']/i.test(html);
+  const hasNextPage = items.length > 0 && (maxPage > currentPage || hasRelNext);
+  return { items, hasNextPage, maxPage };
 }
 
 /**

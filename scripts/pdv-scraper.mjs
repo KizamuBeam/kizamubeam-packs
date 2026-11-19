@@ -55,6 +55,8 @@ Tastenkürzel in der TUI:
   [t]      Zusätzliche ignorierte Tags bearbeiten
   [c]      Cookie / Setup anpassen
   [n / p]  Nächste / vorherige Seite
+  [m]      Nächste Seite an Liste anhängen
+  [l]      Alle Ergebnisseiten nachladen (max. 50 Seiten, [Esc] bricht ab)
   [q]      Beenden
 `);
 }

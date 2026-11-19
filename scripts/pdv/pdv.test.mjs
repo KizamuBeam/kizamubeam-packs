@@ -74,9 +74,12 @@ test('scraper: parseListingPage and parseDetailPage extract items, tags and igno
       <a href="/en/free-clipart/Oak-Tree-Outline/67890.html">Oak Tree Outline</a>
       <span>AI,EPS • Public Domain</span>
     </div>
+    <div class="pagination"><a href="?page=2">2</a> <a href="?page=12">12</a></div>
   `;
-  const listing = parseListingPage(listingHtml);
+  const listing = parseListingPage(listingHtml, 'https://publicdomainvectors.org', 1);
   assert.equal(listing.items.length, 2);
+  assert.equal(listing.maxPage, 12);
+  assert.equal(listing.hasNextPage, true);
   assert.equal(listing.items[0].id, '12345');
   assert.deepEqual(listing.items[0].formats, ['SVG']);
   assert.equal(listing.items[1].id, '67890');
