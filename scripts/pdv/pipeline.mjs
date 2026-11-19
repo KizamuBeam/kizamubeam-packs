@@ -42,7 +42,7 @@ export async function processMotif({
   }
 
   onLog(`Lade Datei (${detail.preferredDownload.format}): ${detail.preferredDownload.url}`);
-  const { buffer } = await client.fetchBuffer(detail.preferredDownload.url);
+  const { buffer, contentType } = await client.fetchBuffer(detail.preferredDownload.url);
 
   const fallbackExt =
     detail.preferredDownload.format === 'EPS'
@@ -51,7 +51,7 @@ export async function processMotif({
         ? '.ai'
         : '.svg';
 
-  const extracted = await extractVectorFromBuffer(buffer, fallbackExt);
+  const extracted = await extractVectorFromBuffer(buffer, fallbackExt, contentType);
   let svgText;
   let convertedFrom = null;
 

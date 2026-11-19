@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { detectConverters, extractVectorFromBuffer } from './convert.mjs';
+import { detectConverters, extractVectorFromBuffer, sniffBufferType } from './convert.mjs';
 import { processMotif } from './pipeline.mjs';
 import { buildSearchUrl, parseDetailPage, parseListingPage } from './scraper.mjs';
 import { analyzeSvg } from './svg.mjs';
@@ -111,7 +111,17 @@ test('convert: detectConverters and extractVectorFromBuffer work for SVG', async
   assert.equal(typeof tools.gs, 'boolean');
   assert.equal(typeof tools.pdftocairo, 'boolean');
 
-  const extracted = await extractVectorFromBuffer(Buffer.from('<svg></svg>'), '.svg');
+  assert.equal(sniffBufferType(Buffer.from('%PDF-1.5\n')), 'pdf');
+  assert.equal(sniffBufferType(Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n')), 'eps');
+  assert.equal(sniffBufferType(Buffer.from('<!DOCTYPE html><html></html>')), 'html');
+  assert.equal(sniffBufferType(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>')), 'svg');
+
+  await assert.rejects(
+    () => extractVectorFromBuffer(Buffer.from('<!DOCTYPE html><html><body>Wait</body></html>'), '.eps', 'text/html'),
+    /Download lieferte HTML/,
+  );
+
+  const extracted = await extractVectorFromBuffer(Buffer.from('<svg></svg>'), '.eps');
   try {
     assert.equal(extracted.ext, '.svg');
     assert.equal(existsSync(extracted.filePath), true);
