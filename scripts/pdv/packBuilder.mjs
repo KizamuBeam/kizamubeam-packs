@@ -122,7 +122,7 @@ export function buildPackFromEntries({
     throw new Error('Kein einziges Motiv konnte konvertiert werden');
   }
 
-  const pack = {
+  const packHeader = {
     format: 'kizamubeam-pack',
     formatVersion: 1,
     id: packId,
@@ -131,23 +131,42 @@ export function buildPackFromEntries({
     name: String(name).trim().slice(0, 80),
     description: String(description || `${assets.length} KizamuBeam-Motive`).trim(),
     author: String(author).trim(),
-    assets,
   };
 
-  const jsonStr = JSON.stringify(pack, null, 2) + '\n';
-  const bytes = Buffer.byteLength(jsonStr, 'utf8');
-  if (bytes > PACK_MAX_BYTES) {
-    const mb = (bytes / 1024 / 1024).toFixed(2);
-    throw new Error(`Paket überschreitet das 20-MB-Limit (${mb} MB). Bitte weniger Motive auswählen.`);
+  // Serialize each asset individually (compact JSON, like KizamuBeam's assetJson) to avoid V8 string-length overflow
+  const assetChunks = assets.map((a) => ({
+    id: a.id,
+    name: a.name,
+    json: JSON.stringify(a),
+  }));
+
+  const headerJson = JSON.stringify(packHeader);
+  const prefix = `${headerJson.slice(0, -1)},"assets":[`;
+  const suffix = ']}\n';
+  const totalBytes =
+    Buffer.byteLength(prefix, 'utf8') +
+    Buffer.byteLength(suffix, 'utf8') +
+    assetChunks.reduce((sum, c, idx) => sum + Buffer.byteLength(c.json, 'utf8') + (idx > 0 ? 1 : 0), 0);
+
+  if (totalBytes > PACK_MAX_BYTES) {
+    const mb = (totalBytes / 1024 / 1024).toFixed(2);
+    const biggest = [...assetChunks]
+      .sort((a, b) => b.json.length - a.json.length)
+      .slice(0, 3)
+      .map((c) => `${c.name} (${(c.json.length / 1024 / 1024).toFixed(1)} MB)`)
+      .join(', ');
+    throw new Error(
+      `Paket überschreitet 20-MB-Limit (${mb} MB bei ${assets.length} Motiven). Größte: ${biggest}`,
+    );
   }
 
   mkdirSync(packsDir, { recursive: true });
   const outPath = join(packsDir, `${packId}.kzp`);
-  writeFileSync(outPath, jsonStr, 'utf8');
+  writeFileSync(outPath, `${prefix}${assetChunks.map((c) => c.json).join(',')}${suffix}`, 'utf8');
 
   return {
     outPath,
-    bytes,
+    bytes: totalBytes,
     assetCount: assets.length,
     errors,
   };
