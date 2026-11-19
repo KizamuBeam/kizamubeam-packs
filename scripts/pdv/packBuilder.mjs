@@ -74,6 +74,8 @@ export function buildPackFromEntries({
   category = 'motif',
   targetMaxMm = 50,
   packsDir,
+  autoSplit = false,
+  maxPackBytes = 18 * 1024 * 1024,
   onProgress = () => {},
 }) {
   if (!PACK_ID_RE.test(packId)) {
@@ -86,6 +88,7 @@ export function buildPackFromEntries({
     throw new Error('Version darf nicht leer sein');
   }
 
+  const effectiveLimit = Math.min(PACK_MAX_BYTES, Math.max(1024, maxPackBytes));
   const assets = [];
   const errors = [];
   const usedIds = new Set();
@@ -122,52 +125,112 @@ export function buildPackFromEntries({
     throw new Error('Kein einziges Motiv konnte konvertiert werden');
   }
 
-  const packHeader = {
-    format: 'kizamubeam-pack',
-    formatVersion: 1,
-    id: packId,
-    version: String(version).trim(),
-    minApp: '1.2.1-beta',
-    name: String(name).trim().slice(0, 80),
-    description: String(description || `${assets.length} KizamuBeam-Motive`).trim(),
-    author: String(author).trim(),
+  // Serialize each asset individually (compact JSON, like KizamuBeam's assetJson) to avoid V8 string-length overflow
+  const assetChunks = assets.map((a) => {
+    const json = JSON.stringify(a);
+    return { id: a.id, name: a.name, json, bytes: Buffer.byteLength(json, 'utf8') };
+  });
+
+  const makeHeader = (id, partName, count) => {
+    const headerJson = JSON.stringify({
+      format: 'kizamubeam-pack',
+      formatVersion: 1,
+      id,
+      version: String(version).trim(),
+      minApp: '1.2.1-beta',
+      name: String(partName).trim().slice(0, 80),
+      description: String(description || `${count} KizamuBeam-Motive`).trim(),
+      author: String(author).trim(),
+    });
+    return {
+      prefix: `${headerJson.slice(0, -1)},"assets":[`,
+      suffix: ']}\n',
+    };
   };
 
-  // Serialize each asset individually (compact JSON, like KizamuBeam's assetJson) to avoid V8 string-length overflow
-  const assetChunks = assets.map((a) => ({
-    id: a.id,
-    name: a.name,
-    json: JSON.stringify(a),
-  }));
+  const singleHeader = makeHeader(packId, name, assets.length);
+  const singleTotalBytes =
+    Buffer.byteLength(singleHeader.prefix, 'utf8') +
+    Buffer.byteLength(singleHeader.suffix, 'utf8') +
+    assetChunks.reduce((sum, c, idx) => sum + c.bytes + (idx > 0 ? 1 : 0), 0);
 
-  const headerJson = JSON.stringify(packHeader);
-  const prefix = `${headerJson.slice(0, -1)},"assets":[`;
-  const suffix = ']}\n';
-  const totalBytes =
-    Buffer.byteLength(prefix, 'utf8') +
-    Buffer.byteLength(suffix, 'utf8') +
-    assetChunks.reduce((sum, c, idx) => sum + Buffer.byteLength(c.json, 'utf8') + (idx > 0 ? 1 : 0), 0);
-
-  if (totalBytes > PACK_MAX_BYTES) {
-    const mb = (totalBytes / 1024 / 1024).toFixed(2);
-    const biggest = [...assetChunks]
-      .sort((a, b) => b.json.length - a.json.length)
-      .slice(0, 3)
-      .map((c) => `${c.name} (${(c.json.length / 1024 / 1024).toFixed(1)} MB)`)
-      .join(', ');
-    throw new Error(
-      `Paket überschreitet 20-MB-Limit (${mb} MB bei ${assets.length} Motiven). Größte: ${biggest}`,
+  if (singleTotalBytes <= PACK_MAX_BYTES && !autoSplit) {
+    mkdirSync(packsDir, { recursive: true });
+    const outPath = join(packsDir, `${packId}.kzp`);
+    writeFileSync(
+      outPath,
+      `${singleHeader.prefix}${assetChunks.map((c) => c.json).join(',')}${singleHeader.suffix}`,
+      'utf8',
     );
+    return {
+      outPath,
+      bytes: singleTotalBytes,
+      assetCount: assets.length,
+      parts: [{ outPath, packId, bytes: singleTotalBytes, assetCount: assets.length }],
+      errors,
+    };
+  }
+
+  // Partition into <= effectiveLimit parts
+  const groups = [];
+  let curGroup = [];
+  let curBytes = 512; // header overhead estimate
+
+  for (const chunk of assetChunks) {
+    if (chunk.bytes + 1024 > PACK_MAX_BYTES) {
+      errors.push({
+        file: chunk.name,
+        error: `Einzelmotiv überschreitet 20-MB-Limit (${(chunk.bytes / 1024 / 1024).toFixed(1)} MB)`,
+      });
+      continue;
+    }
+    const addedBytes = chunk.bytes + (curGroup.length > 0 ? 1 : 0);
+    if (curGroup.length > 0 && curBytes + addedBytes > effectiveLimit) {
+      groups.push(curGroup);
+      curGroup = [chunk];
+      curBytes = 512 + chunk.bytes;
+    } else {
+      curGroup.push(chunk);
+      curBytes += addedBytes;
+    }
+  }
+  if (curGroup.length > 0) groups.push(curGroup);
+
+  if (!autoSplit && singleTotalBytes > PACK_MAX_BYTES) {
+    const mb = (singleTotalBytes / 1024 / 1024).toFixed(2);
+    const err = new Error(
+      `Paket überschreitet 20-MB-Limit (${mb} MB bei ${assets.length} Motiven) – aufteilbar in ${groups.length} Pakete.`,
+    );
+    err.code = 'PACK_TOO_LARGE';
+    err.totalBytes = singleTotalBytes;
+    err.suggestedParts = groups.length;
+    throw err;
+  }
+
+  if (groups.length === 0) {
+    throw new Error('Alle Motive überschreiten einzeln das 20-MB-Limit');
   }
 
   mkdirSync(packsDir, { recursive: true });
-  const outPath = join(packsDir, `${packId}.kzp`);
-  writeFileSync(outPath, `${prefix}${assetChunks.map((c) => c.json).join(',')}${suffix}`, 'utf8');
+  const parts = [];
+  for (let idx = 0; idx < groups.length; idx++) {
+    const partNum = idx + 1;
+    const partId = groups.length === 1 ? packId : `${packId}-${partNum}`;
+    const partName = groups.length === 1 ? name : `${String(name).trim().slice(0, 70)} (${partNum}/${groups.length})`;
+    const g = groups[idx];
+    const h = makeHeader(partId, partName, g.length);
+    const content = `${h.prefix}${g.map((c) => c.json).join(',')}${h.suffix}`;
+    const bytes = Buffer.byteLength(content, 'utf8');
+    const outPath = join(packsDir, `${partId}.kzp`);
+    writeFileSync(outPath, content, 'utf8');
+    parts.push({ outPath, packId: partId, bytes, assetCount: g.length });
+  }
 
   return {
-    outPath,
-    bytes: totalBytes,
-    assetCount: assets.length,
+    outPath: parts[0].outPath,
+    bytes: parts.reduce((s, p) => s + p.bytes, 0),
+    assetCount: parts.reduce((s, p) => s + p.assetCount, 0),
+    parts,
     errors,
   };
 }

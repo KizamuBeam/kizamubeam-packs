@@ -210,19 +210,31 @@ export async function runPackTui({ motifsDir, packsDir, initialFolder = '' }) {
       const boxW = Math.min(cols - 4, 76);
       const startCol = Math.max(1, Math.floor((cols - boxW) / 2));
       const startRow = Math.max(3, Math.floor(rows / 2) - 3);
-      const boxLines = [
-        `┌${'─'.repeat(boxW - 2)}┐`,
-        `│ ${padEndVis(truncate(state.modal.title, boxW - 4), boxW - 4)} │`,
-        `│ ${padEndVis(truncate(state.modal.hint, boxW - 4), boxW - 4)} │`,
-        `│ > ${padEndVis(state.modal.value.slice(-(boxW - 7)), boxW - 6)} │`,
-        `│ ${padEndVis('[Enter] Übernehmen   [Esc] Abbrechen', boxW - 4)} │`,
-        `└${'─'.repeat(boxW - 2)}┘`,
-      ];
+      const boxLines = state.modal.isConfirm
+        ? [
+            `┌${'─'.repeat(boxW - 2)}┐`,
+            `│ ${padEndVis(truncate(state.modal.title, boxW - 4), boxW - 4)} │`,
+            `│ ${padEndVis(truncate(state.modal.hint, boxW - 4), boxW - 4)} │`,
+            `│ ${padEndVis('[Enter] Ja, in Teilpakete aufteilen   [Esc] Abbrechen', boxW - 4)} │`,
+            `└${'─'.repeat(boxW - 2)}┘`,
+          ]
+        : [
+            `┌${'─'.repeat(boxW - 2)}┐`,
+            `│ ${padEndVis(truncate(state.modal.title, boxW - 4), boxW - 4)} │`,
+            `│ ${padEndVis(truncate(state.modal.hint, boxW - 4), boxW - 4)} │`,
+            `│ > ${padEndVis(state.modal.value.slice(-(boxW - 7)), boxW - 6)} │`,
+            `│ ${padEndVis('[Enter] Übernehmen   [Esc] Abbrechen', boxW - 4)} │`,
+            `└${'─'.repeat(boxW - 2)}┘`,
+          ];
       for (let i = 0; i < boxLines.length; i++) {
         out += `${ESC}[${startRow + i};${startCol}H${ANSI.bgBlue}${ANSI.white}${boxLines[i]}${ANSI.reset}`;
       }
-      const cursorCol = startCol + 4 + Math.min(state.modal.value.length, boxW - 7);
-      out += `${ESC}[${startRow + 3};${cursorCol}H${ANSI.showCursor}`;
+      if (!state.modal.isConfirm) {
+        const cursorCol = startCol + 4 + Math.min(state.modal.value.length, boxW - 7);
+        out += `${ESC}[${startRow + 3};${cursorCol}H${ANSI.showCursor}`;
+      } else {
+        out += ANSI.hideCursor;
+      }
     } else {
       out += ANSI.hideCursor;
     }
@@ -231,11 +243,16 @@ export async function runPackTui({ motifsDir, packsDir, initialFolder = '' }) {
   }
 
   function openModal(title, hint, initialValue, onSubmit) {
-    state.modal = { title, hint, value: initialValue, onSubmit };
+    state.modal = { title, hint, value: initialValue, onSubmit, isConfirm: false };
     render();
   }
 
-  function buildCurrentPack() {
+  function openConfirmModal(title, hint, onConfirm) {
+    state.modal = { title, hint, value: '', onSubmit: onConfirm, isConfirm: true };
+    render();
+  }
+
+  function runBuild(autoSplit = false) {
     const selected = state.entries.filter((e) => e.selected);
     if (selected.length === 0) {
       addLog('Keine Motive ausgewählt.');
@@ -251,15 +268,31 @@ export async function runPackTui({ motifsDir, packsDir, initialFolder = '' }) {
         category: state.category,
         targetMaxMm: state.targetMaxMm,
         packsDir: state.packsDir,
+        autoSplit,
       });
-      const mb = (res.bytes / 1024 / 1024).toFixed(2);
-      addLog(`Paket erstellt: ${res.outPath} (${res.assetCount} Motive, ${mb} MB)`);
+      for (const p of res.parts) {
+        const mb = (p.bytes / 1024 / 1024).toFixed(2);
+        addLog(`Paket erstellt: ${p.outPath} (${p.assetCount} Motive, ${mb} MB)`);
+      }
       if (res.errors.length > 0) {
         addLog(`Hinweis: ${res.errors.length} SVG(s) übersprungen (z.B. ${res.errors[0].file}: ${res.errors[0].error})`);
       }
     } catch (err) {
+      if (err?.code === 'PACK_TOO_LARGE' && !autoSplit) {
+        const totalMb = (err.totalBytes / 1024 / 1024).toFixed(1);
+        openConfirmModal(
+          `Paket zu groß (${totalMb} MB > 20 MB) – aufteilen?`,
+          `Erzeugt ${err.suggestedParts} Teilpakete (${state.packId}-1.kzp …)`,
+          () => runBuild(true),
+        );
+        return;
+      }
       addLog(`Build-Fehler: ${err.message}`);
     }
+  }
+
+  function buildCurrentPack() {
+    runBuild(false);
   }
 
   emitKeypressEvents(process.stdin);

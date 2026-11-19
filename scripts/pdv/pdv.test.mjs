@@ -243,6 +243,22 @@ test('svgToAsset & packBuilder: converts SVG paths/shapes and builds a valid .kz
     assert.equal(pack.id, 'org.kizamubeam.christmas');
     assert.equal(pack.assets[0].name, 'Christmas Star');
     assert.deepEqual(pack.assets[0].tags, ['star', 'christmas']);
+
+    // Test autoSplit when maxPackBytes forces multiple parts
+    const many = [
+      { ...entries[0], base: 'star-101', title: 'Star 1' },
+      { ...entries[0], base: 'star-102', title: 'Star 2' },
+      { ...entries[0], base: 'star-103', title: 'Star 3' },
+    ];
+    const splitRes = buildPackFromEntries({
+      entries: many,
+      packId: 'org.kizamubeam.xmas',
+      name: 'XMas',
+      packsDir,
+      autoSplit: true,
+      maxPackBytes: 1024,
+    });
+    assert.equal(splitRes.parts.length, 3);
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
